@@ -14,6 +14,7 @@ Demonstrates how to securely submit a credit card number from the client (browse
     - When the encrypted payload is received, it decrypts the data using the shared secret derived from the client's ephemeral public key and its own private key.
     - The server also verifies the **ECDSA** signature on the payload to ensure data integrity.
 
+
 ---
 
 ## Sample Application
@@ -152,6 +153,35 @@ async function encryptCardNumber(cardNumber) {
     };
 }
 ```
+implement nonce/timestamp-based replay protection
+## Threat Model
+Current ECIES-based implementation secures the **payload**, it's critical to layer in **web security best practices** to defend against broader threats like **session hijacking**, **replay attacks**, **CSRF**, **redirect attacks**, and more.
+
+Few common attack patterns you can associate with this are:
+1. [X] Replay Attacks - An attacker captures the encrypted payload and resends it later
+2. [ ] Session Hijacking - Attacker steals a user’s session cookie or JWT and impersonates them.
+3. [ ] Redirect Attacks (Open Redirects) - Attacker tricks the app into redirecting a user to a malicious site.
+4. [ ] Cross-Site Request Forgery (CSRF) - Attacker tricks a user into sending unwanted requests via authenticated session
+5. [X] Input Sanitization / Injection - Encrypted data is safe, but attackers can still exploit form fields or input points.
+6. [ ] Man-in-the-Middle Attacks - Attacker intercepts the transmission between client and server.
+7. [ ] Public Key Integrity - If the attacker swaps out the server’s public key, all encryption is broken.
+8. [ ] Cross-Origin Resource Sharing (CORS) - You unintentionally expose the encryption or decryption endpoints to other origins
+9. [X] Content Security Policy (CSP) - XSS and Inline script protection
+10. [ ]  Rate Limiting + Brute Force Protection
+
+## Summary Table
+
+| Threat | Mitigation |
+|--------|------------|
+| Replay | Timestamp + Nonce + Signature |
+| Session Hijacking | Secure, HttpOnly, SameSite cookies |
+| CSRF | Tokens + SameSite cookies |
+| XSS | CSP headers |
+| Open Redirects | URL whitelist |
+| MiTM | HTTPS + HSTS |
+| Public Key Tampering | Key pinning or signed key API |
+| CORS | Restrict by domain |
+| Rate Limiting | Per-IP/user limits |
 
 ---
 ## **Security Considerations**

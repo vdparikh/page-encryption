@@ -1,4 +1,21 @@
+function generateNonce(length = 16) {
+    const array = new Uint8Array(length);
+    crypto.getRandomValues(array);
+    return btoa(String.fromCharCode(...array));
+}
+  
+function escapeHTML(str) {
+    const div = document.createElement("div");
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
+
+function sanitizeCardInput(input) {
+    return input.replace(/[^0-9]/g, "").slice(0, 16); // Only allow up to 16 digits
+}
+
 async function encryptCardNumber(cardNumber) {
+    
     // 1. Generate ephemeral key pair
     const ephKeyPair = await window.crypto.subtle.generateKey(
         {
@@ -38,7 +55,7 @@ async function encryptCardNumber(cardNumber) {
             iv: iv
         },
         derivedKey,
-        data
+        data,
     );
 
     const encryptedBytes = new Uint8Array(iv.byteLength + encrypted.byteLength);
@@ -75,10 +92,15 @@ async function encryptCardNumber(cardNumber) {
     // 8. Export signing public key (SPKI)
     const exportedSigningPub = await window.crypto.subtle.exportKey("spki", signingKeyPair.publicKey);
 
+    const timestamp = Math.floor(Date.now() / 1000);
+    const nonce = generateNonce() //crypto.randomUUID();
+
     return {
         encrypted_data: btoa(String.fromCharCode(...encryptedBytes)),
         ephemeral_pub: btoa(String.fromCharCode(...new Uint8Array(rawEphPub))),
         signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
-        signing_pub: btoa(String.fromCharCode(...new Uint8Array(exportedSigningPub)))
+        signing_pub: btoa(String.fromCharCode(...new Uint8Array(exportedSigningPub))),
+        timestamp,
+        nonce,    
     };
 }

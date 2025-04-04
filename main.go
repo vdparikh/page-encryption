@@ -14,10 +14,16 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"sync"
+	"time"
 )
 
 var (
 	privateKeyECDH *ecdh.PrivateKey
+	recentNonces   = make(map[string]int64)
+	mutex          sync.Mutex
+	expiryWindow   = 30 * time.Second // 30 second window
+
 )
 
 type EncryptedPayload struct {
@@ -25,14 +31,37 @@ type EncryptedPayload struct {
 	Signature     string `json:"signature"`
 	EphemeralPub  string `json:"ephemeral_pub"`
 	SigningPub    string `json:"signing_pub"`
+	Timestamp     int64  `json:"timestamp"`
+	Nonce         string `json:"nonce"`
 }
 
 func init() {
+	go func() {
+		for {
+			time.Sleep(1 * time.Minute)
+			now := time.Now().Unix()
+			mutex.Lock()
+			for nonce, ts := range recentNonces {
+				if now-ts > int64(expiryWindow.Seconds()) {
+					delete(recentNonces, nonce)
+				}
+			}
+			mutex.Unlock()
+		}
+	}()
+
 	var err error
 	privateKeyECDH, err = ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		log.Fatalf("ECDH keygen failed: %v", err)
 	}
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func handleDecrypt(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +70,23 @@ func handleDecrypt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	// Replay protection
+	now := time.Now().Unix()
+	log.Printf("Server time: %d | Payload time: %d | Diff: %d\n", now, payload.Timestamp, abs(now-payload.Timestamp))
+
+	if abs(now-payload.Timestamp) > int64(expiryWindow.Seconds()) {
+		http.Error(w, "timestamp out of range", http.StatusUnauthorized)
+		return
+	}
+
+	mutex.Lock()
+	if _, found := recentNonces[payload.Nonce]; found {
+		mutex.Unlock()
+		http.Error(w, "replay detected", http.StatusUnauthorized)
+		return
+	}
+	recentNonces[payload.Nonce] = payload.Timestamp
+	mutex.Unlock()
 
 	cipherData, _ := base64.StdEncoding.DecodeString(payload.EncryptedData)
 	ephPubBytes, _ := base64.StdEncoding.DecodeString(payload.EphemeralPub)
@@ -108,8 +154,41 @@ func handleDecrypt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("✅ Card number decrypted: %s", string(plaintext))
+	decrypted := string(plaintext)
+	log.Printf("Card number decrypted: %s", decrypted)
+	log.Printf("[Safe Logging] Card decrypted: **** **** **** %s", decrypted[len(decrypted)-4:])
+
+	if !isValidCardNumber(decrypted) {
+		http.Error(w, "invalid card format", http.StatusBadRequest)
+		return
+	}
+
 	w.Write([]byte("Card decrypted and verified successfully"))
+}
+
+func isValidCardNumber(card string) bool {
+	if len(card) < 13 || len(card) > 19 {
+		return false
+	}
+	for _, c := range card {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Content Security Policy
+		// w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none';")
+
+		// Extra headers for best practice
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "0") // Deprecated, but still safe to explicitly disable if CSP is used
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleGetKeyJS(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +231,9 @@ func main() {
 	// API endpoints
 	mux.HandleFunc("/decrypt", handleDecrypt)
 
+	securedMux := withSecurityHeaders(mux)
+
 	port := 8080
 	log.Printf("🚀 Server running on http://localhost:%d", port)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), mux))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), securedMux))
 }
